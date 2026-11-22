@@ -32,6 +32,7 @@ class LuaResourceManager
     std::map<std::string, Resource> resources_;
     std::function<void(lua_State*)> binder_;
     std::function<void(lua_State*)> stopper_;
+    std::function<void(const std::string&)> logger_;
     std::string lastError_;
 
     static bool validName(const std::string& name)
@@ -151,6 +152,7 @@ public:
     void setRoot(std::filesystem::path root) { root_ = std::move(root); std::filesystem::create_directories(root_); }
     void setBinder(std::function<void(lua_State*)> binder) { binder_ = std::move(binder); }
     void setStopper(std::function<void(lua_State*)> stopper) { stopper_ = std::move(stopper); }
+    void setLogger(std::function<void(const std::string&)> logger) { logger_ = std::move(logger); }
 
     const std::string& lastError() const { return lastError_; }
 
