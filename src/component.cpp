@@ -25,7 +25,7 @@ extern "C" {
 #include <cctype>
 #include "resource_manager.hpp"
 
-class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler, public PlayerTextEventHandler
+class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler, public PlayerTextEventHandler, public PlayerConnectEventHandler, public PlayerSpawnEventHandler, public PlayerDamageEventHandler, public PlayerChangeEventHandler
 {
     ICore* core_ = nullptr;
     IConsoleComponent* console_ = nullptr;
@@ -554,6 +554,22 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         for (const auto& file : files) runFile(file);
     }
 
+
+    template<class PushArgs>
+    void dispatchEvent(const char* callback, PushArgs pushArgs)
+    {
+        resources_.call(callback, pushArgs);
+        if (!state_) return;
+        lua_getglobal(state_, callback);
+        if (!lua_isfunction(state_, -1)) { lua_pop(state_, 1); return; }
+        const int count = pushArgs(state_);
+        if (lua_pcall(state_, count, 0, 0) != 0) {
+            const char* error = lua_tostring(state_, -1);
+            core_->logLnU8(Error, "[Lua2OMP] %s: %s", callback, error ? error : "runtime error");
+            lua_pop(state_, 1);
+        }
+    }
+
 public:
     StringView componentName() const override { return "Lua2OMP"; }
     SemanticVersion componentVersion() const override { return SemanticVersion(1, 0, 0, BUILD_NUMBER); }
@@ -577,6 +593,10 @@ public:
         timers_ = components->queryComponent<ITimersComponent>();
         resources_.setStopper([this](lua_State* target) { cleanupResource(target); });
         core_->getPlayers().getPlayerTextDispatcher().addEventHandler(this);
+        core_->getPlayers().getPlayerConnectDispatcher().addEventHandler(this);
+        core_->getPlayers().getPlayerSpawnDispatcher().addEventHandler(this);
+        core_->getPlayers().getPlayerDamageDispatcher().addEventHandler(this);
+        core_->getPlayers().getPlayerChangeDispatcher().addEventHandler(this);
         resources_.setRoot(root_ / "resources");
         resources_.setBinder([this](lua_State* target) { bindResourceState(target); });
         if (console_) console_->getEventDispatcher().addEventHandler(this);
@@ -646,6 +666,38 @@ public:
             return true;
         }
         return false;
+    }
+
+
+    void onPlayerConnect(IPlayer& player) override
+    {
+        dispatchEvent("OnPlayerConnect", [&](lua_State* target) { lua_pushinteger(target, player.getID()); return 1; });
+    }
+
+    void onPlayerDisconnect(IPlayer& player, PeerDisconnectReason reason) override
+    {
+        dispatchEvent("OnPlayerDisconnect", [&](lua_State* target) { lua_pushinteger(target, player.getID()); lua_pushinteger(target, static_cast<int>(reason)); return 2; });
+    }
+
+    void onPlayerSpawn(IPlayer& player) override
+    {
+        dispatchEvent("OnPlayerSpawn", [&](lua_State* target) { lua_pushinteger(target, player.getID()); return 1; });
+    }
+
+    void onPlayerDeath(IPlayer& player, IPlayer* killer, int reason) override
+    {
+        dispatchEvent("OnPlayerDeath", [&](lua_State* target) { lua_pushinteger(target, player.getID()); lua_pushinteger(target, killer ? killer->getID() : -1); lua_pushinteger(target, reason); return 3; });
+    }
+
+    void onPlayerStateChange(IPlayer& player, PlayerState newState, PlayerState oldState) override
+    {
+        dispatchEvent("OnPlayerStateChange", [&](lua_State* target) { lua_pushinteger(target, player.getID()); lua_pushinteger(target, static_cast<int>(newState)); lua_pushinteger(target, static_cast<int>(oldState)); return 3; });
+    }
+
+    bool onPlayerText(IPlayer& player, StringView message) override
+    {
+        dispatchEvent("OnPlayerText", [&](lua_State* target) { lua_pushinteger(target, player.getID()); lua_pushlstring(target, message.data(), message.size()); return 2; });
+        return true;
     }
 
     bool onPlayerCommandText(IPlayer& player, StringView message) override
@@ -719,7 +771,13 @@ public:
         if (console_) console_->getEventDispatcher().removeEventHandler(this);
         if (dialogs_) dialogs_->getEventDispatcher().removeEventHandler(this);
         if (textdraws_) textdraws_->getEventDispatcher().removeEventHandler(this);
-        if (core_) core_->getPlayers().getPlayerTextDispatcher().removeEventHandler(this);
+        if (core_) {
+            core_->getPlayers().getPlayerTextDispatcher().removeEventHandler(this);
+            core_->getPlayers().getPlayerConnectDispatcher().removeEventHandler(this);
+            core_->getPlayers().getPlayerSpawnDispatcher().removeEventHandler(this);
+            core_->getPlayers().getPlayerDamageDispatcher().removeEventHandler(this);
+            core_->getPlayers().getPlayerChangeDispatcher().removeEventHandler(this);
+        }
         resources_.stopAll();
         if (state_) { cleanupResource(state_); lua_close(state_); }
     }
