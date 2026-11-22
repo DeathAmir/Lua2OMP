@@ -61,7 +61,7 @@ else()
 endif()
 
 if(WIN32)
-    target_link_libraries(Lua2OMP PRIVATE bcrypt)
+    target_link_libraries(Lua2OMP PRIVATE bcrypt dbghelp)
     target_link_libraries(luaenc PRIVATE bcrypt)
 endif()
 
