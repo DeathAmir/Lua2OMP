@@ -2,6 +2,8 @@
 #include <string>
 #include <filesystem>
 #include <cstdio>
+#include <exception>
+#include <cstdlib>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -66,9 +68,21 @@ inline LONG WINAPI exceptionFilter(EXCEPTION_POINTERS* info) noexcept {
     if(previousFilter)return previousFilter(info);
     return EXCEPTION_EXECUTE_HANDLER;
 }
+inline void terminateHandler() noexcept {
+    char message[1024] = "[Lua2OMP CRASH] Unhandled C++ exception or std::terminate";
+    try {
+        const auto error = std::current_exception();
+        if (error) std::rethrow_exception(error);
+    } catch (const std::exception& exception) {
+        sprintf_s(message, sizeof(message), "[Lua2OMP CRASH] Unhandled C++ exception: %s", exception.what());
+    } catch (...) {}
+    appendLog(activeDirectory, message, static_cast<DWORD>(strlen(message)));
+    std::abort();
+}
 inline void install(const std::filesystem::path& fallbackDirectory) noexcept {
     setActiveDirectory(fallbackDirectory);
     previousFilter=SetUnhandledExceptionFilter(exceptionFilter);
+    std::set_terminate(terminateHandler);
 }
 }
 #else
