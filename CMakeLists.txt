@@ -44,6 +44,10 @@ add_executable(luac ${LUA51_SRC}/luac.c ${LUA51_SRC}/print.c)
 target_link_libraries(luac PRIVATE lua51)
 target_include_directories(luac PRIVATE ${LUA51_SRC})
 
+add_executable(luaenc src/luaenc.cpp)
+target_link_libraries(luaenc PRIVATE lua51)
+target_include_directories(luaenc PRIVATE ${LUA51_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/src)
+
 add_library(Lua2OMP SHARED src/component.cpp)
 target_link_libraries(Lua2OMP PRIVATE OMP-SDK lua51)
 target_include_directories(Lua2OMP PRIVATE ${LUA51_SRC})
@@ -56,7 +60,12 @@ else()
     target_compile_options(Lua2OMP PRIVATE -Wall -Wextra -Wno-unused-parameter)
 endif()
 
-install(TARGETS Lua2OMP luac
+if(WIN32)
+    target_link_libraries(Lua2OMP PRIVATE bcrypt)
+    target_link_libraries(luaenc PRIVATE bcrypt)
+endif()
+
+install(TARGETS Lua2OMP luac luaenc
     RUNTIME DESTINATION .
     LIBRARY DESTINATION .
     ARCHIVE DESTINATION .
