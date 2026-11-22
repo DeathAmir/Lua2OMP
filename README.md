@@ -1,6 +1,6 @@
 # Lua2OMP
 
-Embedded Lua 5.1.5 runtime and bytecode compiler for open.mp.
+Embedded Lua 5.1.5 runtime, resource manager and protected bytecode compiler for open.mp.
 
 ## Resource layout
 
@@ -13,19 +13,18 @@ Server/
         meta.xml
         config.lua
         main.lua
-        modules/messages.lua
 
-Every folder directly under lua/resources is an independent resource with its own Lua state. A resource restart closes its state, runs OnResourceStop, creates a fresh state and executes its manifest scripts again. Globals and Lua-side state are therefore reset.
+Each folder directly under lua/resources is an independent resource with its own Lua state. A resource restart closes its state, runs OnResourceStop, creates a fresh state and executes its manifest scripts again.
 
-A resource manifest is named meta.xml:
+## Manifest
 
 <meta>
+    <info name="Welcome" author="DeathAmir" version="1.0.0" />
     <script src="config.lua" type="server" />
-    <script src="modules/messages.lua" type="server" />
-    <script src="main.lua" type="server" />
+    <script src="main.lal" type="server" />
 </meta>
 
-Scripts execute in manifest order. If meta.xml is absent, Lua files are discovered recursively and loaded alphabetically. require() is available and searches the resource directory using ?.lua and ?/init.lua.
+Supported script extensions are .lua, .luac and encrypted .lal. If meta.xml is absent, scripts are discovered recursively and loaded alphabetically. require() searches the resource directory using ?.lua and ?/init.lua.
 
 ## Server console
 
@@ -37,19 +36,33 @@ restart welcome
 lua_run example.lua
 lua_reload
 
-refresh only discovers folders. Start each desired resource explicitly. Resource callbacks OnResourceStart and OnResourceStop are called during lifecycle transitions.
+Resource errors report the resource, script, loading stage and Lua error. A script syntax/runtime error is isolated to its resource.
 
-## Lua API currently exposed
+## Lua API
 
-SendClientMessage, SetPlayerPos, GetPlayerName, ShowPlayerDialog, TextDrawCreate, TextDrawSetString, TextDrawLetterSize, TextDrawTextSize, TextDrawColor, TextDrawUseBox, TextDrawBoxColor, TextDrawAlignment, TextDrawSetShadow, TextDrawSetOutline, TextDrawSetSelectable, TextDrawShowForPlayer, TextDrawHideForPlayer, TextDrawDestroy.
+SendClientMessage, SetPlayerPos, GetPlayerName, GetPlayerDrunkLevel, SetPlayerDrunkLevel, ShowPlayerDialog, TextDrawCreate, TextDrawSetString, TextDrawLetterSize, TextDrawTextSize, TextDrawColor, TextDrawUseBox, TextDrawBoxColor, TextDrawAlignment, TextDrawSetShadow, TextDrawSetOutline, TextDrawSetSelectable, TextDrawShowForPlayer, TextDrawHideForPlayer, TextDrawDestroy, CreateObject, DestroyObject, SetObjectPos, SetObjectRot, CreateVehicle, DestroyVehicle, SetVehiclePos, SetVehicleHealth, addCommandHandler, setTimer and killTimer.
 
-Current callbacks: OnDialogResponse and OnPlayerClickTextDraw.
+This is an initial API subset, not a complete Pawn/open.mp or MTA API port.
 
-The resource lifecycle and modular loading are now implemented. This is not yet a complete Pawn/open.mp API port: player command registration, broad player state, vehicle/object creation, timers, and their full event set are not included in this commit.
+## Compile and encrypt
+
+luac is the standard Lua 5.1 bytecode compiler. Use luaenc to compile and encrypt in one step:
+
+luaenc input.lua output.lal
+
+The output begins with the four-byte L@L v1 marker. The payload is Lua 5.1 bytecode encrypted using AES-256-GCM with a fresh random 96-bit nonce and a 128-bit authentication tag. The resource loader authenticates and decrypts in memory before passing bytecode to Lua; plaintext is not written to disk.
+
+Use the encrypted extension in meta.xml:
+
+<script src="main.lal" type="server" />
+
+## Security
+
+The shared master key is embedded in both compiler and component binaries. A determined person with the binaries can extract it. This protects against casual inspection and detects tampering, but it is not equivalent to per-server secret keys or a secure execution boundary. Install only trusted resources.
 
 ## Build
 
-Requirements: CMake 3.20+, Git, and a C++17 toolchain.
+Requirements: CMake 3.20+, Git and a C++17 toolchain.
 
 Windows 32-bit:
 cmake -S . -B build -A Win32
@@ -59,27 +72,4 @@ Windows x64:
 cmake -S . -B build -A x64
 cmake --build build --config Release
 
-Outputs: Lua2OMP.dll and luac.exe. Compile Lua bytecode using luac -o output.luac input.lua.
-
-## Security
-
-Resources run inside the server process. Only install trusted scripts. Resource states open Lua base, table, string, math and package libraries; io, os and debug are not opened.
-
-
-### Lua API examples
-
-```lua
-addCommandHandler("hello", function(playerid, params)
-    SendClientMessage(playerid, 0xFFFFFFFF, "Hello from Lua: " .. params)
-    return true
-end)
-
-local timer = setTimer(function()
-    print("Timer tick")
-end, 1000, true)
-
-local object = CreateObject( model, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0 )
-local vehicle = CreateVehicle(411, 0.0, 0.0, 5.0, 0.0, 1, 1)
-```
-
-`addCommandHandler` callbacks receive `playerid, params`; `setTimer` receives a Lua function, interval in milliseconds, and a repeating boolean. Timers, commands, TextDraws, objects, and vehicles created by a resource are cleaned up when that resource stops or restarts. The initial object/vehicle API is deliberately small and uses global open.mp pools.
+Outputs: Lua2OMP.dll, luac.exe and luaenc.exe.
