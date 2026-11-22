@@ -64,3 +64,22 @@ Outputs: Lua2OMP.dll and luac.exe. Compile Lua bytecode using luac -o output.lua
 ## Security
 
 Resources run inside the server process. Only install trusted scripts. Resource states open Lua base, table, string, math and package libraries; io, os and debug are not opened.
+
+
+### Lua API examples
+
+```lua
+addCommandHandler("hello", function(playerid, params)
+    SendClientMessage(playerid, 0xFFFFFFFF, "Hello from Lua: " .. params)
+    return true
+end)
+
+local timer = setTimer(function()
+    print("Timer tick")
+end, 1000, true)
+
+local object = CreateObject( model, 0.0, 0.0, 5.0, 0.0, 0.0, 0.0 )
+local vehicle = CreateVehicle(411, 0.0, 0.0, 5.0, 0.0, 1, 1)
+```
+
+`addCommandHandler` callbacks receive `playerid, params`; `setTimer` receives a Lua function, interval in milliseconds, and a repeating boolean. Timers, commands, TextDraws, objects, and vehicles created by a resource are cleaned up when that resource stops or restarts. The initial object/vehicle API is deliberately small and uses global open.mp pools.
