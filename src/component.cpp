@@ -23,6 +23,7 @@ extern "C" {
 #include <algorithm>
 #include <sstream>
 #include <cctype>
+#include "crypto.hpp"
 #include "resource_manager.hpp"
 
 class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler, public PlayerTextEventHandler, public PlayerConnectEventHandler, public PlayerSpawnEventHandler, public PlayerDamageEventHandler, public PlayerChangeEventHandler
@@ -524,8 +525,17 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         const auto relative = full.lexically_relative(base);
         if (relative.empty() || relative.generic_string().rfind("..", 0) == 0 || full == base) return false;
         const auto ext = full.extension().string();
-        if (ext != ".lua" && ext != ".luac") return false;
-        const int result = luaL_loadfile(state_, full.string().c_str());
+        if (ext != ".lua" && ext != ".luac" && ext != ".lal") return false;
+        int result = 0;
+        std::vector<unsigned char> decrypted;
+        std::string decryptError;
+        if (ext == ".lal") {
+            if (!lua2omp_crypto::loadEncrypted(full.string(), decrypted, decryptError)) {
+                core_->logLnU8(Error, "[Lua2OMP] ERROR: %s: %s", relative.string().c_str(), decryptError.c_str());
+                return false;
+            }
+            result = luaL_loadbuffer(state_, reinterpret_cast<const char*>(decrypted.data()), decrypted.size(), relative.string().c_str());
+        } else result = luaL_loadfile(state_, full.string().c_str());
         if (result == 0) {
             if (lua_pcall(state_, 0, 0, 0) != 0) {
                 const char* error = lua_tostring(state_, -1);
@@ -548,7 +558,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         std::filesystem::create_directories(autorun);
         std::vector<std::filesystem::path> files;
         for (const auto& entry : std::filesystem::directory_iterator(autorun))
-            if (entry.is_regular_file() && (entry.path().extension() == ".lua" || entry.path().extension() == ".luac"))
+            if (entry.is_regular_file() && (entry.path().extension() == ".lua" || entry.path().extension() == ".luac" || entry.path().extension() == ".lal"))
                 files.push_back(entry.path());
         std::sort(files.begin(), files.end());
         for (const auto& file : files) runFile(file);
@@ -636,7 +646,7 @@ public:
             }
             bool ok = command == "start" ? resources_.start(args) :
                       command == "stop" ? resources_.stop(args) : resources_.restart(args);
-            core_->printLnU8("[Lua2OMP] %s resource '%s': %s", std::string(command).c_str(), args.c_str(), ok ? "success" : "failed");
+            core_->printLnU8("[Lua2OMP] %s resource '%s': %s", std::string(command).c_str(), args.c_str(), ok ? "success" : resources_.lastError().c_str());
             return true;
         }
         if (command == "refresh")
@@ -652,7 +662,7 @@ public:
         }
         if (command == "lua_run")
         {
-            if (args.empty()) { core_->printLnU8("Usage: lua_run <file.lua|file.luac>"); return true; }
+            if (args.empty()) { core_->printLnU8("Usage: lua_run <file.lua|file.luac|file.lal>"); return true; }
             runFile(root_ / args);
             return true;
         }
