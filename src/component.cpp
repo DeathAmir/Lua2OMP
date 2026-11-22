@@ -23,6 +23,7 @@ extern "C" {
 #include <algorithm>
 #include <sstream>
 #include <cctype>
+#include <exception>
 #include "crypto.hpp"
 #include "crash_guard.hpp"
 #include "resource_manager.hpp"
@@ -612,6 +613,8 @@ public:
 
     void onInit(IComponentList* components) override
     {
+        try
+        {
         console_ = components->queryComponent<IConsoleComponent>();
         dialogs_ = components->queryComponent<IDialogsComponent>();
         textdraws_ = components->queryComponent<ITextDrawsComponent>();
@@ -630,13 +633,41 @@ public:
         if (console_) console_->getEventDispatcher().addEventHandler(this);
         if (dialogs_) dialogs_->getEventDispatcher().addEventHandler(this);
         if (textdraws_) textdraws_->getEventDispatcher().addEventHandler(this);
+        }
+        catch (const std::exception& exception)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] onInit exception: " << exception.what() << "\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] onInit exception: %s", exception.what());
+        }
+        catch (...)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] onInit: unknown native exception\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] onInit: unknown native exception");
+        }
     }
 
     void onReady() override
     {
+        try
+        {
         core_->printLnU8("[Lua2OMP] Lua 5.1 runtime initialized. Script folder: lua/");
         loadAutorun();
         resources_.refresh();
+        }
+        catch (const std::exception& exception)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] onReady exception: " << exception.what() << "\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] onReady exception: %s", exception.what());
+        }
+        catch (...)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] onReady: unknown native exception\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] onReady: unknown native exception");
+        }
     }
 
     void onFree(IComponent* component) override
@@ -652,6 +683,8 @@ public:
     bool onConsoleText(StringView command, StringView parameters, const ConsoleCommandSenderData& sender) override
     {
         if (sender.sender != ConsoleCommandSender::Console) return false;
+        try
+        {
         std::string args(parameters);
         while (!args.empty() && std::isspace(static_cast<unsigned char>(args.front()))) args.erase(args.begin());
         while (!args.empty() && std::isspace(static_cast<unsigned char>(args.back()))) args.pop_back();
@@ -694,6 +727,21 @@ public:
             return true;
         }
         return false;
+        }
+        catch (const std::exception& exception)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] console command exception: " << exception.what() << "\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] console command exception: %s", exception.what());
+            return true;
+        }
+        catch (...)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] console command: unknown native exception\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] console command: unknown native exception");
+            return true;
+        }
     }
 
 
