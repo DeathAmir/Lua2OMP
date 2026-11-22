@@ -42,7 +42,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         {
             if (i > 1) output += "\t";
             size_t length = 0;
-            const char* value = luaL_tolstring(state, i, &length);
+            const char* value = luaL_checklstring(state, i, &length);
             if (value) output.append(value, length);
             lua_pop(state, 1);
         }
@@ -265,7 +265,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         const auto full = std::filesystem::weakly_canonical(file);
         const auto base = std::filesystem::weakly_canonical(root_);
         const auto relative = full.lexically_relative(base);
-        if (relative.empty() || relative.native().find("..") == 0) return false;
+        if (relative.empty() || relative.generic_string().rfind("..", 0) == 0 || full == base) return false;
         const auto ext = full.extension().string();
         if (ext != ".lua" && ext != ".luac") return false;
         const int result = luaL_loadfile(state_, full.string().c_str());
