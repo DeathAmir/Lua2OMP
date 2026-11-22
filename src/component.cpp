@@ -602,6 +602,7 @@ public:
         vehicles_ = components->queryComponent<IVehiclesComponent>();
         timers_ = components->queryComponent<ITimersComponent>();
         resources_.setStopper([this](lua_State* target) { cleanupResource(target); });
+        resources_.setLogger([this](const std::string& message) { if (core_) core_->logLnU8(Error, "[Lua2OMP] %s", message.c_str()); });
         core_->getPlayers().getPlayerTextDispatcher().addEventHandler(this);
         core_->getPlayers().getPlayerConnectDispatcher().addEventHandler(this);
         core_->getPlayers().getPlayerSpawnDispatcher().addEventHandler(this);
