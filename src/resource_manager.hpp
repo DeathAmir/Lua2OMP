@@ -1,7 +1,13 @@
 #pragma once
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
+#ifdef __cplusplus
+}
+#endif
 #include <filesystem>
 #include <fstream>
 #include <functional>
@@ -24,6 +30,7 @@ class LuaResourceManager
     std::filesystem::path root_;
     std::map<std::string, Resource> resources_;
     std::function<void(lua_State*)> binder_;
+    std::function<void(lua_State*)> stopper_;
 
     static bool validName(const std::string& name)
     {
@@ -85,6 +92,7 @@ class LuaResourceManager
         {
             if (luaL_loadfile(resource.state, script.string().c_str()) != 0 || lua_pcall(resource.state, 0, 0, 0) != 0)
             {
+                if (stopper_) stopper_(resource.state);
                 lua_close(resource.state);
                 resource.state = nullptr;
                 return false;
@@ -102,6 +110,7 @@ class LuaResourceManager
 public:
     void setRoot(std::filesystem::path root) { root_ = std::move(root); std::filesystem::create_directories(root_); }
     void setBinder(std::function<void(lua_State*)> binder) { binder_ = std::move(binder); }
+    void setStopper(std::function<void(lua_State*)> stopper) { stopper_ = std::move(stopper); }
 
     bool start(const std::string& name)
     {
@@ -129,6 +138,7 @@ public:
             if (lua_pcall(found->second.state, 0, 0, 0) != 0) lua_pop(found->second.state, 1);
         }
         else lua_pop(found->second.state, 1);
+        if (stopper_) stopper_(found->second.state);
         lua_close(found->second.state);
         found->second.state = nullptr;
         return true;
