@@ -137,6 +137,10 @@ class LuaResourceManager
                 const char* message = lua_tostring(resource.state, -1);
                 lastError_ = resource.name + ": OnResourceStart: " + (message ? message : "unknown Lua error");
                 lua_pop(resource.state, 1);
+                if (stopper_) stopper_(resource.state);
+                lua_close(resource.state);
+                resource.state = nullptr;
+                return false;
             }
         }
         else lua_pop(resource.state, 1);
