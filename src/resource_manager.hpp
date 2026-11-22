@@ -18,6 +18,7 @@ extern "C" {
 #include <algorithm>
 #include <cctype>
 #include "crypto.hpp"
+#include "crash_guard.hpp"
 
 class LuaResourceManager
 {
@@ -34,6 +35,18 @@ class LuaResourceManager
     std::function<void(lua_State*)> stopper_;
     std::function<void(const std::string&)> logger_;
     std::string lastError_;
+
+    void report(const Resource* resource, const std::string& message)
+    {
+        lastError_ = message;
+        if (resource)
+        {
+            std::ofstream log(resource->directory / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] " << message << "\n";
+            lua2omp_crash::setActiveDirectory(resource->directory);
+        }
+        if (logger_) logger_(message);
+    }
 
     static bool validName(const std::string& name)
     {
@@ -82,9 +95,9 @@ class LuaResourceManager
     bool load(Resource& resource)
     {
         resource.scripts = findScripts(resource.directory);
-        if (resource.scripts.empty()) { lastError_ = "no Lua scripts found in resource"; return false; }
+        if (resource.scripts.empty()) { report(&resource, "no Lua scripts found in resource"); return false; }
         resource.state = luaL_newstate();
-        if (!resource.state) return false;
+        if (!resource.state) { report(&resource, "cannot allocate Lua state"); return false; }
         if (binder_) binder_(resource.state);
         const std::string modulePath = (resource.directory / "?.lua").string() + ";" + (resource.directory / "?/init.lua").string();
         lua_getglobal(resource.state, "package");
@@ -100,7 +113,7 @@ class LuaResourceManager
                 std::string decryptError;
                 if (!lua2omp_crypto::loadEncrypted(script.string(), bytecode, decryptError))
                 {
-                    lastError_ = script.filename().string() + ": " + decryptError;
+                    report(&resource, script.filename().string() + ": " + decryptError);
                     if (stopper_) stopper_(resource.state);
                     lua_close(resource.state);
                     resource.state = nullptr;
@@ -112,7 +125,7 @@ class LuaResourceManager
             if (loaded != 0)
             {
                 const char* message = lua_tostring(resource.state, -1);
-                lastError_ = script.filename().string() + ": compile/load error: " + (message ? message : "unknown Lua error");
+                report(&resource, script.filename().string() + ": compile/load error: " + (message ? message : "unknown Lua error"));
                 lua_pop(resource.state, 1);
                 if (stopper_) stopper_(resource.state);
                 lua_close(resource.state);
@@ -122,7 +135,7 @@ class LuaResourceManager
             if (lua_pcall(resource.state, 0, 0, 0) != 0)
             {
                 const char* message = lua_tostring(resource.state, -1);
-                lastError_ = script.filename().string() + ": runtime error: " + (message ? message : "unknown Lua error");
+                report(&resource, script.filename().string() + ": runtime error: " + (message ? message : "unknown Lua error"));
                 lua_pop(resource.state, 1);
                 if (stopper_) stopper_(resource.state);
                 lua_close(resource.state);
@@ -136,7 +149,7 @@ class LuaResourceManager
             if (lua_pcall(resource.state, 0, 0, 0) != 0)
             {
                 const char* message = lua_tostring(resource.state, -1);
-                lastError_ = resource.name + ": OnResourceStart: " + (message ? message : "unknown Lua error");
+                report(&resource, "OnResourceStart: " + std::string(message ? message : "unknown Lua error"));
                 lua_pop(resource.state, 1);
                 if (stopper_) stopper_(resource.state);
                 lua_close(resource.state);
@@ -159,24 +172,33 @@ public:
     bool start(const std::string& name)
     {
         lastError_.clear();
-        if (!validName(name)) { lastError_ = "invalid resource name"; return false; }
+        try
+        {
+        if (!validName(name)) { report(nullptr, "invalid resource name"); return false; }
         auto found = resources_.find(name);
         if (found != resources_.end() && found->second.state) return true;
         const auto base = std::filesystem::weakly_canonical(root_);
         const auto directory = std::filesystem::weakly_canonical(root_ / name);
-        if (!inside(directory, base) || !std::filesystem::is_directory(directory)) { lastError_ = "resource directory not found"; return false; }
+        if (!inside(directory, base) || !std::filesystem::is_directory(directory)) { report(nullptr, "resource directory not found"); return false; }
         Resource resource;
         resource.name = name;
         resource.directory = directory;
+        lua2omp_crash::setActiveDirectory(directory);
         if (!load(resource)) return false;
         resources_[name] = std::move(resource);
         return true;
+        }
+        catch (const std::exception& exception) { report(nullptr, std::string("resource start exception: ") + exception.what()); return false; }
+        catch (...) { report(nullptr, "resource start: unknown native exception"); return false; }
     }
 
     bool stop(const std::string& name)
     {
+        try
+        {
         auto found = resources_.find(name);
-        if (found == resources_.end() || !found->second.state) { lastError_ = "resource is not running"; return false; }
+        if (found == resources_.end() || !found->second.state) { report(nullptr, "resource is not running"); return false; }
+        lua2omp_crash::setActiveDirectory(found->second.directory);
         lua_getglobal(found->second.state, "OnResourceStop");
         if (lua_isfunction(found->second.state, -1))
         {
@@ -187,6 +209,9 @@ public:
         lua_close(found->second.state);
         found->second.state = nullptr;
         return true;
+        }
+        catch (const std::exception& exception) { report(nullptr, std::string("resource stop exception: ") + exception.what()); return false; }
+        catch (...) { report(nullptr, "resource stop: unknown native exception"); return false; }
     }
 
     bool restart(const std::string& name) { stop(name); return start(name); }
@@ -242,10 +267,16 @@ public:
         {
             lua_State* state = item.second.state;
             if (!state) continue;
+            lua2omp_crash::setActiveDirectory(item.second.directory);
             lua_getglobal(state, callback);
             if (!lua_isfunction(state, -1)) { lua_pop(state, 1); continue; }
             const int count = pushArgs(state);
-            if (lua_pcall(state, count, 0, 0) != 0) lua_pop(state, 1);
+            if (lua_pcall(state, count, 0, 0) != 0)
+            {
+                const char* message = lua_tostring(state, -1);
+                report(&item.second, std::string(callback) + ": " + (message ? message : "runtime error"));
+                lua_pop(state, 1);
+            }
         }
     }
 };
