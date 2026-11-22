@@ -17,6 +17,7 @@ extern "C" {
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include "crypto.hpp"
 
 class LuaResourceManager
 {
@@ -31,6 +32,7 @@ class LuaResourceManager
     std::map<std::string, Resource> resources_;
     std::function<void(lua_State*)> binder_;
     std::function<void(lua_State*)> stopper_;
+    std::string lastError_;
 
     static bool validName(const std::string& name)
     {
@@ -63,13 +65,13 @@ class LuaResourceManager
                 if (std::regex_search(attributes, scriptType, type) && scriptType[1].str() != "server") continue;
                 const auto candidate = std::filesystem::weakly_canonical(directory / source[1].str());
                 if (!inside(candidate, std::filesystem::weakly_canonical(directory)) || !std::filesystem::is_regular_file(candidate)) continue;
-                if (candidate.extension() == ".lua" || candidate.extension() == ".luac") result.push_back(candidate);
+                if (candidate.extension() == ".lua" || candidate.extension() == ".luac" || candidate.extension() == ".lal") result.push_back(candidate);
             }
         }
         else
         {
             for (const auto& entry : std::filesystem::recursive_directory_iterator(directory))
-                if (entry.is_regular_file() && (entry.path().extension() == ".lua" || entry.path().extension() == ".luac"))
+                if (entry.is_regular_file() && (entry.path().extension() == ".lua" || entry.path().extension() == ".luac" || entry.path().extension() == ".lal"))
                     result.push_back(std::filesystem::weakly_canonical(entry.path()));
             std::sort(result.begin(), result.end());
         }
@@ -79,7 +81,7 @@ class LuaResourceManager
     bool load(Resource& resource)
     {
         resource.scripts = findScripts(resource.directory);
-        if (resource.scripts.empty()) return false;
+        if (resource.scripts.empty()) { lastError_ = "no Lua scripts found in resource"; return false; }
         resource.state = luaL_newstate();
         if (!resource.state) return false;
         if (binder_) binder_(resource.state);
@@ -90,8 +92,37 @@ class LuaResourceManager
         lua_pop(resource.state, 1);
         for (const auto& script : resource.scripts)
         {
-            if (luaL_loadfile(resource.state, script.string().c_str()) != 0 || lua_pcall(resource.state, 0, 0, 0) != 0)
+            int loaded = 0;
+            if (script.extension() == ".lal")
             {
+                std::vector<unsigned char> bytecode;
+                std::string decryptError;
+                if (!lua2omp_crypto::loadEncrypted(script.string(), bytecode, decryptError))
+                {
+                    lastError_ = script.filename().string() + ": " + decryptError;
+                    if (stopper_) stopper_(resource.state);
+                    lua_close(resource.state);
+                    resource.state = nullptr;
+                    return false;
+                }
+                loaded = luaL_loadbuffer(resource.state, reinterpret_cast<const char*>(bytecode.data()), bytecode.size(), script.filename().string().c_str());
+            }
+            else loaded = luaL_loadfile(resource.state, script.string().c_str());
+            if (loaded != 0)
+            {
+                const char* message = lua_tostring(resource.state, -1);
+                lastError_ = script.filename().string() + ": compile/load error: " + (message ? message : "unknown Lua error");
+                lua_pop(resource.state, 1);
+                if (stopper_) stopper_(resource.state);
+                lua_close(resource.state);
+                resource.state = nullptr;
+                return false;
+            }
+            if (lua_pcall(resource.state, 0, 0, 0) != 0)
+            {
+                const char* message = lua_tostring(resource.state, -1);
+                lastError_ = script.filename().string() + ": runtime error: " + (message ? message : "unknown Lua error");
+                lua_pop(resource.state, 1);
                 if (stopper_) stopper_(resource.state);
                 lua_close(resource.state);
                 resource.state = nullptr;
@@ -101,7 +132,12 @@ class LuaResourceManager
         lua_getglobal(resource.state, "OnResourceStart");
         if (lua_isfunction(resource.state, -1))
         {
-            if (lua_pcall(resource.state, 0, 0, 0) != 0) lua_pop(resource.state, 1);
+            if (lua_pcall(resource.state, 0, 0, 0) != 0)
+            {
+                const char* message = lua_tostring(resource.state, -1);
+                lastError_ = resource.name + ": OnResourceStart: " + (message ? message : "unknown Lua error");
+                lua_pop(resource.state, 1);
+            }
         }
         else lua_pop(resource.state, 1);
         return true;
@@ -112,14 +148,17 @@ public:
     void setBinder(std::function<void(lua_State*)> binder) { binder_ = std::move(binder); }
     void setStopper(std::function<void(lua_State*)> stopper) { stopper_ = std::move(stopper); }
 
+    const std::string& lastError() const { return lastError_; }
+
     bool start(const std::string& name)
     {
-        if (!validName(name)) return false;
+        lastError_.clear();
+        if (!validName(name)) { lastError_ = "invalid resource name"; return false; }
         auto found = resources_.find(name);
         if (found != resources_.end() && found->second.state) return true;
         const auto base = std::filesystem::weakly_canonical(root_);
         const auto directory = std::filesystem::weakly_canonical(root_ / name);
-        if (!inside(directory, base) || !std::filesystem::is_directory(directory)) return false;
+        if (!inside(directory, base) || !std::filesystem::is_directory(directory)) { lastError_ = "resource directory not found"; return false; }
         Resource resource;
         resource.name = name;
         resource.directory = directory;
@@ -131,7 +170,7 @@ public:
     bool stop(const std::string& name)
     {
         auto found = resources_.find(name);
-        if (found == resources_.end() || !found->second.state) return false;
+        if (found == resources_.end() || !found->second.state) { lastError_ = "resource is not running"; return false; }
         lua_getglobal(found->second.state, "OnResourceStop");
         if (lua_isfunction(found->second.state, -1))
         {
