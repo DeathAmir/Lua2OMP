@@ -435,11 +435,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
 
     void bindResourceState(lua_State* target)
     {
-        luaopen_base(target);
-        luaopen_table(target);
-        luaopen_string(target);
-        luaopen_math(target);
-        luaopen_package(target);
+        luaL_openlibs(target);
         registerFunction(target, "print", luaPrint);
         registerFunction(target, "SendClientMessage", sendClientMessage);
         registerFunction(target, "SetPlayerPos", setPlayerPosition);
@@ -486,10 +482,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         state_ = luaL_newstate();
         if (!state_) return;
         lua2omp_panic::attach(state_, root_ / "autorun", root_);
-        luaopen_base(state_);
-        luaopen_table(state_);
-        luaopen_string(state_);
-        luaopen_math(state_);
+        luaL_openlibs(state_);
         registerFunction("print", luaPrint);
         registerFunction("SendClientMessage", sendClientMessage);
         registerFunction("SetPlayerPos", setPlayerPosition);
