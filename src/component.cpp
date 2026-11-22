@@ -12,6 +12,9 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <sstream>
+#include <cctype>
+#include "resource_manager.hpp"
 
 class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler
 {
@@ -22,6 +25,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
     lua_State* state_ = nullptr;
     std::filesystem::path root_;
     std::map<int, ITextDraw*> textDrawPool_;
+    LuaResourceManager resources_;
 
     static Lua2OMPComponent* self(lua_State* state)
     {
@@ -215,11 +219,50 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         return 0;
     }
 
+    void registerFunction(lua_State* target, const char* name, lua_CFunction function)
+    {
+        lua_pushlightuserdata(target, this);
+        lua_pushcclosure(target, function, 1);
+        lua_setglobal(target, name);
+    }
+
     void registerFunction(const char* name, lua_CFunction function)
     {
-        lua_pushlightuserdata(state_, this);
-        lua_pushcclosure(state_, function, 1);
-        lua_setglobal(state_, name);
+        registerFunction(state_, name, function);
+    }
+
+    void bindResourceState(lua_State* target)
+    {
+        luaopen_base(target);
+        luaopen_table(target);
+        luaopen_string(target);
+        luaopen_math(target);
+        luaopen_package(target);
+        registerFunction(target, "print", luaPrint);
+        registerFunction(target, "SendClientMessage", sendClientMessage);
+        registerFunction(target, "SetPlayerPos", setPlayerPosition);
+        registerFunction(target, "GetPlayerName", getPlayerName);
+        registerFunction(target, "ShowPlayerDialog", showPlayerDialog);
+        registerFunction(target, "TextDrawCreate", createTextDraw);
+        registerFunction(target, "TextDrawSetString", textDrawSetText);
+        registerFunction(target, "TextDrawLetterSize", textDrawSetLetterSize);
+        registerFunction(target, "TextDrawTextSize", textDrawSetTextSize);
+        registerFunction(target, "TextDrawColor", textDrawColor);
+        registerFunction(target, "TextDrawUseBox", textDrawBox);
+        registerFunction(target, "TextDrawBoxColor", textDrawBoxColor);
+        registerFunction(target, "TextDrawAlignment", textDrawAlignment);
+        registerFunction(target, "TextDrawSetShadow", textDrawShadow);
+        registerFunction(target, "TextDrawSetOutline", textDrawOutline);
+        registerFunction(target, "TextDrawSetSelectable", textDrawSelectable);
+        registerFunction(target, "TextDrawShowForPlayer", textDrawShowForPlayer);
+        registerFunction(target, "TextDrawHideForPlayer", textDrawHideForPlayer);
+        registerFunction(target, "TextDrawDestroy", textDrawDestroy);
+        lua_pushinteger(target, 0); lua_setglobal(target, "DIALOG_STYLE_MSGBOX");
+        lua_pushinteger(target, 1); lua_setglobal(target, "DIALOG_STYLE_INPUT");
+        lua_pushinteger(target, 2); lua_setglobal(target, "DIALOG_STYLE_LIST");
+        lua_pushinteger(target, 3); lua_setglobal(target, "DIALOG_STYLE_PASSWORD");
+        lua_pushinteger(target, 4); lua_setglobal(target, "DIALOG_STYLE_TABLIST");
+        lua_pushinteger(target, 5); lua_setglobal(target, "DIALOG_STYLE_TABLIST_HEADERS");
     }
 
     void createState()
@@ -314,6 +357,8 @@ public:
         console_ = components->queryComponent<IConsoleComponent>();
         dialogs_ = components->queryComponent<IDialogsComponent>();
         textdraws_ = components->queryComponent<ITextDrawsComponent>();
+        resources_.setRoot(root_ / "resources");
+        resources_.setBinder([this](lua_State* target) { bindResourceState(target); });
         if (console_) console_->getEventDispatcher().addEventHandler(this);
         if (dialogs_) dialogs_->getEventDispatcher().addEventHandler(this);
         if (textdraws_) textdraws_->getEventDispatcher().addEventHandler(this);
@@ -323,6 +368,7 @@ public:
     {
         core_->printLnU8("[Lua2OMP] Lua 5.1 runtime initialized. Script folder: lua/");
         loadAutorun();
+        resources_.refresh();
     }
 
     void onFree(IComponent* component) override
@@ -334,24 +380,45 @@ public:
 
     bool onConsoleText(StringView command, StringView parameters, const ConsoleCommandSenderData& sender) override
     {
-        if (command == "lua_run")
+        if (sender.sender != ConsoleCommandSender::Console) return false;
+        std::string args(parameters);
+        while (!args.empty() && std::isspace(static_cast<unsigned char>(args.front()))) args.erase(args.begin());
+        while (!args.empty() && std::isspace(static_cast<unsigned char>(args.back()))) args.pop_back();
+
+        if (command == "start" || command == "stop" || command == "restart")
         {
-            if (sender.sender != ConsoleCommandSender::Console) return true;
-            std::string name(parameters);
-            while (!name.empty() && (name.front() == ' ' || name.front() == '\t')) name.erase(name.begin());
-            if (name.empty()) {
-                core_->printLnU8("Usage: lua_run <file.lua|file.luac>");
+            if (args.empty()) {
+                core_->printLnU8("Usage: %.*s <resource>", static_cast<int>(command.size()), command.data());
                 return true;
             }
-            runFile(root_ / name);
+            bool ok = command == "start" ? resources_.start(args) :
+                      command == "stop" ? resources_.stop(args) : resources_.restart(args);
+            core_->printLnU8("[Lua2OMP] %s resource '%s': %s", std::string(command).c_str(), args.c_str(), ok ? "success" : "failed");
+            return true;
+        }
+        if (command == "refresh")
+        {
+            const auto count = resources_.refresh();
+            core_->printLnU8("[Lua2OMP] %llu resource(s) discovered.", static_cast<unsigned long long>(count));
+            return true;
+        }
+        if (command == "resources")
+        {
+            resources_.printList([this](const std::string& line) { core_->printLnU8("%s", line.c_str()); });
+            return true;
+        }
+        if (command == "lua_run")
+        {
+            if (args.empty()) { core_->printLnU8("Usage: lua_run <file.lua|file.luac>"); return true; }
+            runFile(root_ / args);
             return true;
         }
         if (command == "lua_reload")
         {
-            if (sender.sender != ConsoleCommandSender::Console) return true;
             textDrawPool_.clear();
             createState();
             loadAutorun();
+            resources_.restartAll();
             core_->printLnU8("[Lua2OMP] Runtime reloaded.");
             return true;
         }
@@ -360,6 +427,7 @@ public:
 
     void onDialogResponse(IPlayer& player, int dialogId, DialogResponse response, int listItem, StringView inputText) override
     {
+        resources_.call("OnDialogResponse", [&](lua_State* target) { lua_pushinteger(target, player.getID()); lua_pushinteger(target, dialogId); lua_pushinteger(target, static_cast<int>(response)); lua_pushinteger(target, listItem); lua_pushlstring(target, inputText.data(), inputText.size()); return 5; });
         if (!state_) return;
         lua_getglobal(state_, "OnDialogResponse");
         if (!lua_isfunction(state_, -1)) { lua_pop(state_, 1); return; }
@@ -377,6 +445,7 @@ public:
 
     void onPlayerClickTextDraw(IPlayer& player, ITextDraw& draw) override
     {
+        resources_.call("OnPlayerClickTextDraw", [&](lua_State* target) { lua_pushinteger(target, player.getID()); lua_pushinteger(target, draw.getID()); return 2; });
         if (!state_) return;
         lua_getglobal(state_, "OnPlayerClickTextDraw");
         if (!lua_isfunction(state_, -1)) { lua_pop(state_, 1); return; }
@@ -403,6 +472,7 @@ public:
         if (console_) console_->getEventDispatcher().removeEventHandler(this);
         if (dialogs_) dialogs_->getEventDispatcher().removeEventHandler(this);
         if (textdraws_) textdraws_->getEventDispatcher().removeEventHandler(this);
+        resources_.stopAll();
         if (state_) lua_close(state_);
     }
 };

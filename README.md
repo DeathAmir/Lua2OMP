@@ -1,72 +1,66 @@
 # Lua2OMP
 
-Lua 5.1 runtime component for open.mp.
+Embedded Lua 5.1.5 runtime and bytecode compiler for open.mp.
 
-## Features
+## Resource layout
 
-- Embedded Lua 5.1.5 runtime inside the open.mp server process.
-- Standalone Lua 5.1 bytecode compiler (`luac`).
-- Script directory: `Server/lua/`.
-- Automatic loading of scripts in `Server/lua/autorun/`.
-- Console commands: `lua_run <file.lua|file.luac>` and `lua_reload`.
-- Initial server bindings for player chat, player position/name, dialogs and global TextDraw UI.
-- Lua callbacks: `OnDialogResponse` and `OnPlayerClickTextDraw`.
+Server/
+  components/Lua2OMP.dll
+  lua/
+    autorun/
+    resources/
+      welcome/
+        meta.xml
+        config.lua
+        main.lua
+        modules/messages.lua
+
+Every folder directly under lua/resources is an independent resource with its own Lua state. A resource restart closes its state, runs OnResourceStop, creates a fresh state and executes its manifest scripts again. Globals and Lua-side state are therefore reset.
+
+A resource manifest is named meta.xml:
+
+<meta>
+    <script src="config.lua" type="server" />
+    <script src="modules/messages.lua" type="server" />
+    <script src="main.lua" type="server" />
+</meta>
+
+Scripts execute in manifest order. If meta.xml is absent, Lua files are discovered recursively and loaded alphabetically. require() is available and searches the resource directory using ?.lua and ?/init.lua.
+
+## Server console
+
+refresh
+resources
+start welcome
+stop welcome
+restart welcome
+lua_run example.lua
+lua_reload
+
+refresh only discovers folders. Start each desired resource explicitly. Resource callbacks OnResourceStart and OnResourceStop are called during lifecycle transitions.
+
+## Lua API currently exposed
+
+SendClientMessage, SetPlayerPos, GetPlayerName, ShowPlayerDialog, TextDrawCreate, TextDrawSetString, TextDrawLetterSize, TextDrawTextSize, TextDrawColor, TextDrawUseBox, TextDrawBoxColor, TextDrawAlignment, TextDrawSetShadow, TextDrawSetOutline, TextDrawSetSelectable, TextDrawShowForPlayer, TextDrawHideForPlayer, TextDrawDestroy.
+
+Current callbacks: OnDialogResponse and OnPlayerClickTextDraw.
+
+The resource lifecycle and modular loading are now implemented. This is not yet a complete Pawn/open.mp API port: player command registration, broad player state, vehicle/object creation, timers, and their full event set are not included in this commit.
 
 ## Build
 
 Requirements: CMake 3.20+, Git, and a C++17 toolchain.
 
-Windows 32-bit open.mp:
-```powershell
+Windows 32-bit:
 cmake -S . -B build -A Win32
 cmake --build build --config Release
-```
 
 Windows x64:
-```powershell
 cmake -S . -B build -A x64
 cmake --build build --config Release
-```
 
-The build downloads the pinned open.mp SDK and official Lua 5.1.5 source archive.
-
-Outputs:
-- `Lua2OMP.dll`: copy to `Server/components/`.
-- `luac.exe`: Lua 5.1 bytecode compiler. Compile scripts with `luac -o output.luac input.lua`.
-
-## Scripts
-
-Put scripts in `Server/lua/`. Files in `Server/lua/autorun/` load when the component starts.
-
-From the server console:
-```
-lua_run example.lua
-lua_run autorun/example.lua
-lua_reload
-```
-
-Lua files can use these initial bindings:
-
-```lua
-print("Hello from Lua 5.1")
-
-SendClientMessage(0, 0xFFFFFFFF, "Hello player")
-SetPlayerPos(0, 1958.0, 1343.0, 15.0)
-local name = GetPlayerName(0)
-
-local dialog = ShowPlayerDialog(0, 1000, DIALOG_STYLE_MSGBOX,
-    "Lua2OMP", "Lua UI is running", "OK", "Close")
-
-local td = TextDrawCreate(320.0, 100.0, "Lua2OMP")
-TextDrawLetterSize(td, 0.5, 1.2)
-TextDrawColor(td, 0xFFFFFFFF)
-TextDrawSetOutline(td, 1)
-TextDrawSetSelectable(td, true)
-TextDrawShowForPlayer(td, 0)
-```
-
-The first version intentionally exposes a limited server-side API. It does not yet mirror every SA-MP/open.mp Pawn native. More player, vehicle, object, player-textdraw, timer and event bindings can be added incrementally.
+Outputs: Lua2OMP.dll and luac.exe. Compile Lua bytecode using luac -o output.luac input.lua.
 
 ## Security
 
-Scripts run inside the server process with the permissions of the server account. Only install trusted scripts. The embedded runtime opens Lua base, table, string, math and coroutine libraries; it does not open the Lua `io`, `os`, `package` or `debug` libraries.
+Resources run inside the server process. Only install trusted scripts. Resource states open Lua base, table, string, math and package libraries; io, os and debug are not opened.

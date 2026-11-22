@@ -1,0 +1,5 @@
+<meta>
+    <script src="config.lua" type="server" />
+    <script src="modules/messages.lua" type="server" />
+    <script src="main.lua" type="server" />
+</meta>
