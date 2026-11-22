@@ -34,7 +34,7 @@ class LuaResourceManager
     static bool inside(const std::filesystem::path& path, const std::filesystem::path& base)
     {
         const auto relative = path.lexically_relative(base);
-        return !relative.empty() && relative != "." && relative.native().find("..") != 0;
+        return !relative.empty() && relative != "." && relative.generic_string().rfind("..", 0) != 0;
     }
 
     std::vector<std::filesystem::path> findScripts(const std::filesystem::path& directory)
