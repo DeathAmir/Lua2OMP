@@ -17,6 +17,7 @@ extern "C" {
 #include <vector>
 #include <algorithm>
 #include <cctype>
+#include <exception>
 #include "crypto.hpp"
 #include "crash_guard.hpp"
 
@@ -39,11 +40,12 @@ class LuaResourceManager
     void report(const Resource* resource, const std::string& message)
     {
         lastError_ = message;
-        if (resource)
+        const auto logDirectory = resource ? resource->directory : root_;
+        if (!logDirectory.empty())
         {
-            std::ofstream log(resource->directory / "error.log", std::ios::app);
+            std::ofstream log(logDirectory / "error.log", std::ios::app);
             if (log) log << "[Lua2OMP] " << message << "\n";
-            lua2omp_crash::setActiveDirectory(resource->directory);
+            if (resource) lua2omp_crash::setActiveDirectory(resource->directory);
         }
         if (logger_) logger_(message);
     }
@@ -226,30 +228,41 @@ public:
     {
         for (auto& item : resources_)
         {
-            if (item.second.state) stop(item.first);
-            load(item.second);
+            try
+            {
+                if (item.second.state) stop(item.first);
+                lua2omp_crash::setActiveDirectory(item.second.directory);
+                if (!load(item.second) && logger_) logger_(lastError_);
+            }
+            catch (const std::exception& exception) { report(&item.second, std::string("restart exception: ") + exception.what()); }
+            catch (...) { report(&item.second, "restart: unknown native exception"); }
         }
     }
 
     size_t refresh()
     {
-        std::filesystem::create_directories(root_);
-        for (const auto& entry : std::filesystem::directory_iterator(root_))
+        try
         {
-            if (!entry.is_directory()) continue;
-            const auto name = entry.path().filename().string();
-            if (validName(name) && resources_.find(name) == resources_.end())
-                resources_.emplace(name, Resource{name, std::filesystem::weakly_canonical(entry.path()), nullptr, {}});
-        }
-        for (auto it = resources_.begin(); it != resources_.end();)
-        {
-            if (!std::filesystem::is_directory(root_ / it->first))
+            std::filesystem::create_directories(root_);
+            for (const auto& entry : std::filesystem::directory_iterator(root_))
             {
-                if (it->second.state) stop(it->first);
-                it = resources_.erase(it);
+                if (!entry.is_directory()) continue;
+                const auto name = entry.path().filename().string();
+                if (validName(name) && resources_.find(name) == resources_.end())
+                    resources_.emplace(name, Resource{name, std::filesystem::weakly_canonical(entry.path()), nullptr, {}});
             }
-            else ++it;
+            for (auto it = resources_.begin(); it != resources_.end();)
+            {
+                if (!std::filesystem::is_directory(root_ / it->first))
+                {
+                    if (it->second.state) stop(it->first);
+                    it = resources_.erase(it);
+                }
+                else ++it;
+            }
         }
+        catch (const std::exception& exception) { report(nullptr, std::string("refresh exception: ") + exception.what()); }
+        catch (...) { report(nullptr, "refresh: unknown native exception"); }
         return resources_.size();
     }
 
