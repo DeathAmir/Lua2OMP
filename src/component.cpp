@@ -600,13 +600,13 @@ public:
         catch (const std::exception& exception)
         {
             std::ofstream log(root_ / "error.log", std::ios::app);
-            if (log) log << "[Lua2OMP] onLoad exception: " << exception.what() << "\\n";
+            if (log) log << "[Lua2OMP] onLoad exception: " << exception.what() << "\n";
             if (core_) core_->logLnU8(Error, "[Lua2OMP] onLoad exception: %s", exception.what());
         }
         catch (...)
         {
             std::ofstream log(root_ / "error.log", std::ios::app);
-            if (log) log << "[Lua2OMP] onLoad: unknown native exception\\n";
+            if (log) log << "[Lua2OMP] onLoad: unknown native exception\n";
             if (core_) core_->logLnU8(Error, "[Lua2OMP] onLoad: unknown native exception");
         }
     }
