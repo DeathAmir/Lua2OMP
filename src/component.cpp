@@ -262,6 +262,15 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
     }
 
 
+    static int getPlayerDrunkLevel(lua_State* state)
+    {
+        auto* instance = self(state);
+        auto* target = instance->player(static_cast<int>(luaL_checkinteger(state, 1)));
+        if (!target) { lua_pushnil(state); return 1; }
+        lua_pushinteger(state, target->getDrunkLevel());
+        return 1;
+    }
+
     static int setPlayerDrunkLevel(lua_State* state)
     {
         auto* instance = self(state);
@@ -422,6 +431,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         registerFunction(target, "SendClientMessage", sendClientMessage);
         registerFunction(target, "SetPlayerPos", setPlayerPosition);
         registerFunction(target, "GetPlayerName", getPlayerName);
+        registerFunction(target, "GetPlayerDrunkLevel", getPlayerDrunkLevel);
         registerFunction(target, "SetPlayerDrunkLevel", setPlayerDrunkLevel);
         registerFunction(target, "addCommandHandler", addCommandHandler);
         registerFunction(target, "CreateObject", createObject);
@@ -459,7 +469,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
 
     void createState()
     {
-        if (state_) lua_close(state_);
+        if (state_) { cleanupResource(state_); lua_close(state_); }
         state_ = luaL_newstate();
         if (!state_) return;
         luaopen_base(state_);
@@ -470,6 +480,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         registerFunction("SendClientMessage", sendClientMessage);
         registerFunction("SetPlayerPos", setPlayerPosition);
         registerFunction("GetPlayerName", getPlayerName);
+        registerFunction("GetPlayerDrunkLevel", getPlayerDrunkLevel);
         registerFunction("SetPlayerDrunkLevel", setPlayerDrunkLevel);
         registerFunction("addCommandHandler", addCommandHandler);
         registerFunction("CreateObject", createObject);
@@ -656,7 +667,7 @@ public:
                 const char* error = lua_tostring(target, -1);
                 core_->logLnU8(Error, "[Lua2OMP] command /%s: %s", command.c_str(), error ? error : "runtime error");
                 lua_pop(target, 1);
-            } else { handled = handled || lua_toboolean(target, -1) != 0; lua_pop(target, 1); }
+            } else { handled = true; lua_pop(target, 1); }
         }
         return handled;
     }
@@ -710,7 +721,7 @@ public:
         if (textdraws_) textdraws_->getEventDispatcher().removeEventHandler(this);
         if (core_) core_->getPlayers().getPlayerTextDispatcher().removeEventHandler(this);
         resources_.stopAll();
-        if (state_) lua_close(state_);
+        if (state_) { cleanupResource(state_); lua_close(state_); }
     }
 };
 
