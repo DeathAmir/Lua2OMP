@@ -17,7 +17,6 @@ FetchContent_MakeAvailable(omp_sdk)
 FetchContent_Declare(
     lua51
     URL https://www.lua.org/ftp/lua-5.1.5.tar.gz
-    URL_HASH SHA256=2640fc8f1112dc9a9e17e4c2e6e4a7d8c0a6a9b6e3d4c9f5b5e6f7a8b9c0d1e2f
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
 )
 FetchContent_GetProperties(lua51)
