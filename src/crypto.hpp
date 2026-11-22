@@ -49,7 +49,7 @@ inline bool transform(bool enc,const std::vector<unsigned char>& in,std::vector<
  ULONG written=0;
  if(ok) {
   const auto* src=in.empty()?reinterpret_cast<const unsigned char*>(""):in.data();
-  auto* dst=out.empty()?reinterpret_cast<unsigned char*>(""):out.data();
+  auto* dst=out.empty()?nullptr:out.data();
   const NTSTATUS status=enc
    ? BCryptEncrypt(kh,const_cast<PUCHAR>(src),static_cast<ULONG>(in.size()),&auth,nullptr,0,dst,static_cast<ULONG>(out.size()),&written,0)
    : BCryptDecrypt(kh,const_cast<PUCHAR>(src),static_cast<ULONG>(in.size()),&auth,nullptr,0,dst,static_cast<ULONG>(out.size()),&written,0);
