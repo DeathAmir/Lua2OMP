@@ -29,6 +29,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item build/Release/Lua2OMP.dll dist/
           Copy-Item build/Release/luac.exe dist/
+          Copy-Item build/Release/luaenc.exe dist/
           Copy-Item README.md dist/
           Compress-Archive -Path dist/* -DestinationPath Lua2OMP-windows-${{ matrix.arch }}.zip
       - uses: actions/upload-artifact@v4
