@@ -2,9 +2,18 @@
 #include <Server/Components/Console/console.hpp>
 #include <Server/Components/Dialogs/dialogs.hpp>
 #include <Server/Components/TextDraws/textdraws.hpp>
+#include <Server/Components/Objects/objects.hpp>
+#include <Server/Components/Vehicles/vehicles.hpp>
+#include <Server/Components/Timers/timers.hpp>
+#ifdef __cplusplus
+extern "C" {
+#endif
 #include <lua.h>
 #include <lauxlib.h>
 #include <lualib.h>
+#ifdef __cplusplus
+}
+#endif
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -16,15 +25,33 @@
 #include <cctype>
 #include "resource_manager.hpp"
 
-class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler
+class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler, public PlayerTextEventHandler
 {
     ICore* core_ = nullptr;
     IConsoleComponent* console_ = nullptr;
     IDialogsComponent* dialogs_ = nullptr;
     ITextDrawsComponent* textdraws_ = nullptr;
+    IObjectsComponent* objects_ = nullptr;
+    IVehiclesComponent* vehicles_ = nullptr;
+    ITimersComponent* timers_ = nullptr;
     lua_State* state_ = nullptr;
     std::filesystem::path root_;
     std::map<int, ITextDraw*> textDrawPool_;
+    std::map<int, lua_State*> textDrawOwners_;
+    std::map<lua_State*, std::map<std::string, int>> commandHandlers_;
+    std::map<int, IObject*> objectPool_;
+    std::map<int, lua_State*> objectOwners_;
+    std::map<int, IVehicle*> vehiclePool_;
+    std::map<int, lua_State*> vehicleOwners_;
+    int nextTimerId_ = 1;
+    struct LuaTimer final : TimerTimeOutHandler {
+        Lua2OMPComponent* owner; lua_State* state; int reference; int id;
+        LuaTimer(Lua2OMPComponent* o, lua_State* s, int r, int i) : owner(o), state(s), reference(r), id(i) {}
+        void timeout(ITimer&) override { lua_rawgeti(state, LUA_REGISTRYINDEX, reference); if (lua_pcall(state, 0, 0, 0) != 0) { const char* e = lua_tostring(state, -1); if (owner->core_) owner->core_->logLnU8(Error, "[Lua2OMP] Timer: %s", e ? e : "runtime error"); lua_pop(state, 1); } }
+        void free(ITimer&) override { owner->timerPool_.erase(id); owner->timerOwners_.erase(id); luaL_unref(state, LUA_REGISTRYINDEX, reference); delete this; }
+    };
+    std::map<int, ITimer*> timerPool_;
+    std::map<int, lua_State*> timerOwners_;
     LuaResourceManager resources_;
 
     static Lua2OMPComponent* self(lua_State* state)
@@ -120,6 +147,7 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         auto* draw = instance->textdraws_->create(Vector2(x, y), text);
         if (!draw) { lua_pushinteger(state, -1); return 1; }
         instance->textDrawPool_[draw->getID()] = draw;
+        instance->textDrawOwners_[draw->getID()] = state;
         lua_pushinteger(state, draw->getID());
         return 1;
     }
@@ -214,8 +242,10 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
     {
         auto* instance = self(state);
         const int id = static_cast<int>(luaL_checkinteger(state, 1));
-        if (instance->textdraws_ && instance->textDrawPool_.erase(id))
+        if (instance->textdraws_ && instance->textDrawPool_.erase(id)) {
+            instance->textDrawOwners_.erase(id);
             instance->textdraws_->release(id);
+        }
         return 0;
     }
 
@@ -231,6 +261,156 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         registerFunction(state_, name, function);
     }
 
+
+    static int setPlayerDrunkLevel(lua_State* state)
+    {
+        auto* instance = self(state);
+        auto* target = instance->player(static_cast<int>(luaL_checkinteger(state, 1)));
+        if (!target) { lua_pushboolean(state, 0); return 1; }
+        target->setDrunkLevel(static_cast<int>(luaL_checkinteger(state, 2)));
+        lua_pushboolean(state, 1); return 1;
+    }
+
+    static int addCommandHandler(lua_State* state)
+    {
+        auto* instance = self(state);
+        const char* name = luaL_checkstring(state, 1);
+        luaL_checktype(state, 2, LUA_TFUNCTION);
+        std::string command(name);
+        if (command.empty() || command.find_first_of(" \t/") != std::string::npos) { lua_pushboolean(state, 0); return 1; }
+        lua_pushvalue(state, 2);
+        const int ref = luaL_ref(state, LUA_REGISTRYINDEX);
+        auto& handlers = instance->commandHandlers_[state];
+        auto old = handlers.find(command);
+        if (old != handlers.end()) luaL_unref(state, LUA_REGISTRYINDEX, old->second);
+        handlers[command] = ref;
+        lua_pushboolean(state, 1); return 1;
+    }
+
+    static int createObject(lua_State* state)
+    {
+        auto* instance = self(state);
+        if (!instance->objects_) { lua_pushinteger(state, -1); return 1; }
+        const int model = static_cast<int>(luaL_checkinteger(state, 1));
+        Vector3 pos(static_cast<float>(luaL_checknumber(state, 2)), static_cast<float>(luaL_checknumber(state, 3)), static_cast<float>(luaL_checknumber(state, 4)));
+        Vector3 rot(static_cast<float>(luaL_checknumber(state, 5)), static_cast<float>(luaL_checknumber(state, 6)), static_cast<float>(luaL_checknumber(state, 7)));
+        auto* object = instance->objects_->create(model, pos, rot);
+        if (!object) { lua_pushinteger(state, -1); return 1; }
+        const int id = object->getID(); instance->objectPool_[id] = object; instance->objectOwners_[id] = state;
+        lua_pushinteger(state, id); return 1;
+    }
+
+    static int destroyObject(lua_State* state)
+    {
+        auto* instance = self(state); const int id = static_cast<int>(luaL_checkinteger(state, 1));
+        auto it = instance->objectPool_.find(id);
+        if (it != instance->objectPool_.end() && instance->objectOwners_[id] == state) {
+            instance->objects_->release(id); instance->objectPool_.erase(it); instance->objectOwners_.erase(id); lua_pushboolean(state, 1);
+        } else lua_pushboolean(state, 0);
+        return 1;
+    }
+
+    static int setObjectPos(lua_State* state)
+    {
+        auto* instance = self(state); const int id = static_cast<int>(luaL_checkinteger(state, 1));
+        auto it = instance->objectPool_.find(id);
+        if (it == instance->objectPool_.end() || instance->objectOwners_[id] != state) { lua_pushboolean(state, 0); return 1; }
+        it->second->setPosition(Vector3(static_cast<float>(luaL_checknumber(state, 2)), static_cast<float>(luaL_checknumber(state, 3)), static_cast<float>(luaL_checknumber(state, 4))));
+        lua_pushboolean(state, 1); return 1;
+    }
+
+    static int setObjectRot(lua_State* state)
+    {
+        auto* instance = self(state); const int id = static_cast<int>(luaL_checkinteger(state, 1));
+        auto it = instance->objectPool_.find(id);
+        if (it == instance->objectPool_.end() || instance->objectOwners_[id] != state) { lua_pushboolean(state, 0); return 1; }
+        it->second->setRotation(GTAQuat(Vector3(static_cast<float>(luaL_checknumber(state, 2)), static_cast<float>(luaL_checknumber(state, 3)), static_cast<float>(luaL_checknumber(state, 4)))));
+        lua_pushboolean(state, 1); return 1;
+    }
+
+    static int createVehicle(lua_State* state)
+    {
+        auto* instance = self(state);
+        if (!instance->vehicles_) { lua_pushinteger(state, -1); return 1; }
+        const int model = static_cast<int>(luaL_checkinteger(state, 1));
+        Vector3 pos(static_cast<float>(luaL_checknumber(state, 2)), static_cast<float>(luaL_checknumber(state, 3)), static_cast<float>(luaL_checknumber(state, 4)));
+        auto* vehicle = instance->vehicles_->create(false, model, pos, static_cast<float>(luaL_optnumber(state, 5, 0)), static_cast<int>(luaL_optinteger(state, 6, -1)), static_cast<int>(luaL_optinteger(state, 7, -1)));
+        if (!vehicle) { lua_pushinteger(state, -1); return 1; }
+        const int id = vehicle->getID(); instance->vehiclePool_[id] = vehicle; instance->vehicleOwners_[id] = state;
+        lua_pushinteger(state, id); return 1;
+    }
+
+    static int destroyVehicle(lua_State* state)
+    {
+        auto* instance = self(state); const int id = static_cast<int>(luaL_checkinteger(state, 1));
+        auto it = instance->vehiclePool_.find(id);
+        if (it != instance->vehiclePool_.end() && instance->vehicleOwners_[id] == state) {
+            instance->vehicles_->release(id); instance->vehiclePool_.erase(it); instance->vehicleOwners_.erase(id); lua_pushboolean(state, 1);
+        } else lua_pushboolean(state, 0);
+        return 1;
+    }
+
+    static int setVehicleHealth(lua_State* state)
+    {
+        auto* instance = self(state); const int id = static_cast<int>(luaL_checkinteger(state, 1));
+        auto it = instance->vehiclePool_.find(id);
+        if (it == instance->vehiclePool_.end() || instance->vehicleOwners_[id] != state) { lua_pushboolean(state, 0); return 1; }
+        it->second->setHealth(static_cast<float>(luaL_checknumber(state, 2))); lua_pushboolean(state, 1); return 1;
+    }
+
+    static int setVehiclePos(lua_State* state)
+    {
+        auto* instance = self(state); const int id = static_cast<int>(luaL_checkinteger(state, 1));
+        auto it = instance->vehiclePool_.find(id);
+        if (it == instance->vehiclePool_.end() || instance->vehicleOwners_[id] != state) { lua_pushboolean(state, 0); return 1; }
+        it->second->setPosition(Vector3(static_cast<float>(luaL_checknumber(state, 2)), static_cast<float>(luaL_checknumber(state, 3)), static_cast<float>(luaL_checknumber(state, 4))));
+        lua_pushboolean(state, 1); return 1;
+    }
+
+    static int setTimer(lua_State* state)
+    {
+        auto* instance = self(state);
+        if (!instance->timers_) { lua_pushnil(state); return 1; }
+        luaL_checktype(state, 1, LUA_TFUNCTION);
+        const int interval = static_cast<int>(luaL_checkinteger(state, 2));
+        const bool repeating = lua_toboolean(state, 3) != 0;
+        if (interval < 1) { lua_pushnil(state); return 1; }
+        lua_pushvalue(state, 1);
+        const int ref = luaL_ref(state, LUA_REGISTRYINDEX);
+        const int id = instance->nextTimerId_++;
+        auto* handler = new LuaTimer(instance, state, ref, id);
+        auto* timer = instance->timers_->create(handler, Milliseconds(interval), repeating);
+        if (!timer) { luaL_unref(state, LUA_REGISTRYINDEX, ref); delete handler; lua_pushnil(state); return 1; }
+        instance->timerPool_[id] = timer; instance->timerOwners_[id] = state;
+        lua_pushinteger(state, id); return 1;
+    }
+
+    static int killTimer(lua_State* state)
+    {
+        auto* instance = self(state); const int id = static_cast<int>(luaL_checkinteger(state, 1));
+        auto it = instance->timerPool_.find(id);
+        if (it == instance->timerPool_.end() || instance->timerOwners_[id] != state) { lua_pushboolean(state, 0); return 1; }
+        it->second->kill(); lua_pushboolean(state, 1); return 1;
+    }
+
+    void cleanupResource(lua_State* state)
+    {
+        for (auto it = textDrawOwners_.begin(); it != textDrawOwners_.end();) {
+            if (it->second == state) { if (textdraws_) textdraws_->release(it->first); textDrawPool_.erase(it->first); it = textDrawOwners_.erase(it); } else ++it;
+        }
+        for (auto it = objectOwners_.begin(); it != objectOwners_.end();) {
+            if (it->second == state) { if (objects_) objects_->release(it->first); objectPool_.erase(it->first); it = objectOwners_.erase(it); } else ++it;
+        }
+        for (auto it = vehicleOwners_.begin(); it != vehicleOwners_.end();) {
+            if (it->second == state) { if (vehicles_) vehicles_->release(it->first); vehiclePool_.erase(it->first); it = vehicleOwners_.erase(it); } else ++it;
+        }
+        std::vector<int> timerIds;
+        for (const auto& item : timerOwners_) if (item.second == state) timerIds.push_back(item.first);
+        for (int id : timerIds) { auto it = timerPool_.find(id); if (it != timerPool_.end()) it->second->kill(); }
+        auto commands = commandHandlers_.find(state);
+        if (commands != commandHandlers_.end()) { for (const auto& item : commands->second) luaL_unref(state, LUA_REGISTRYINDEX, item.second); commandHandlers_.erase(commands); }
+    }
+
     void bindResourceState(lua_State* target)
     {
         luaopen_base(target);
@@ -242,6 +422,18 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         registerFunction(target, "SendClientMessage", sendClientMessage);
         registerFunction(target, "SetPlayerPos", setPlayerPosition);
         registerFunction(target, "GetPlayerName", getPlayerName);
+        registerFunction(target, "SetPlayerDrunkLevel", setPlayerDrunkLevel);
+        registerFunction(target, "addCommandHandler", addCommandHandler);
+        registerFunction(target, "CreateObject", createObject);
+        registerFunction(target, "DestroyObject", destroyObject);
+        registerFunction(target, "SetObjectPos", setObjectPos);
+        registerFunction(target, "SetObjectRot", setObjectRot);
+        registerFunction(target, "CreateVehicle", createVehicle);
+        registerFunction(target, "DestroyVehicle", destroyVehicle);
+        registerFunction(target, "SetVehicleHealth", setVehicleHealth);
+        registerFunction(target, "SetVehiclePos", setVehiclePos);
+        registerFunction(target, "setTimer", setTimer);
+        registerFunction(target, "killTimer", killTimer);
         registerFunction(target, "ShowPlayerDialog", showPlayerDialog);
         registerFunction(target, "TextDrawCreate", createTextDraw);
         registerFunction(target, "TextDrawSetString", textDrawSetText);
@@ -278,6 +470,18 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         registerFunction("SendClientMessage", sendClientMessage);
         registerFunction("SetPlayerPos", setPlayerPosition);
         registerFunction("GetPlayerName", getPlayerName);
+        registerFunction("SetPlayerDrunkLevel", setPlayerDrunkLevel);
+        registerFunction("addCommandHandler", addCommandHandler);
+        registerFunction("CreateObject", createObject);
+        registerFunction("DestroyObject", destroyObject);
+        registerFunction("SetObjectPos", setObjectPos);
+        registerFunction("SetObjectRot", setObjectRot);
+        registerFunction("CreateVehicle", createVehicle);
+        registerFunction("DestroyVehicle", destroyVehicle);
+        registerFunction("SetVehicleHealth", setVehicleHealth);
+        registerFunction("SetVehiclePos", setVehiclePos);
+        registerFunction("setTimer", setTimer);
+        registerFunction("killTimer", killTimer);
         registerFunction("ShowPlayerDialog", showPlayerDialog);
         registerFunction("TextDrawCreate", createTextDraw);
         registerFunction("TextDrawSetString", textDrawSetText);
@@ -357,6 +561,11 @@ public:
         console_ = components->queryComponent<IConsoleComponent>();
         dialogs_ = components->queryComponent<IDialogsComponent>();
         textdraws_ = components->queryComponent<ITextDrawsComponent>();
+        objects_ = components->queryComponent<IObjectsComponent>();
+        vehicles_ = components->queryComponent<IVehiclesComponent>();
+        timers_ = components->queryComponent<ITimersComponent>();
+        resources_.setStopper([this](lua_State* target) { cleanupResource(target); });
+        core_->getPlayers().getPlayerTextDispatcher().addEventHandler(this);
         resources_.setRoot(root_ / "resources");
         resources_.setBinder([this](lua_State* target) { bindResourceState(target); });
         if (console_) console_->getEventDispatcher().addEventHandler(this);
@@ -376,6 +585,9 @@ public:
         if (component == console_) console_ = nullptr;
         if (component == dialogs_) dialogs_ = nullptr;
         if (component == textdraws_) textdraws_ = nullptr;
+        if (component == objects_) objects_ = nullptr;
+        if (component == vehicles_) vehicles_ = nullptr;
+        if (component == timers_) timers_ = nullptr;
     }
 
     bool onConsoleText(StringView command, StringView parameters, const ConsoleCommandSenderData& sender) override
@@ -425,6 +637,30 @@ public:
         return false;
     }
 
+    bool onPlayerCommandText(IPlayer& player, StringView message) override
+    {
+        std::string text(message);
+        if (text.empty() || text[0] != '/') return false;
+        const auto split = text.find_first_of(" \t");
+        const std::string command = text.substr(1, split == std::string::npos ? std::string::npos : split - 1);
+        const std::string params = split == std::string::npos ? "" : text.substr(split + 1);
+        bool handled = false;
+        for (auto& entry : commandHandlers_) {
+            auto it = entry.second.find(command);
+            if (it == entry.second.end()) continue;
+            lua_State* target = entry.first;
+            lua_rawgeti(target, LUA_REGISTRYINDEX, it->second);
+            lua_pushinteger(target, player.getID());
+            lua_pushlstring(target, params.data(), params.size());
+            if (lua_pcall(target, 2, 1, 0) != 0) {
+                const char* error = lua_tostring(target, -1);
+                core_->logLnU8(Error, "[Lua2OMP] command /%s: %s", command.c_str(), error ? error : "runtime error");
+                lua_pop(target, 1);
+            } else { handled = handled || lua_toboolean(target, -1) != 0; lua_pop(target, 1); }
+        }
+        return handled;
+    }
+
     void onDialogResponse(IPlayer& player, int dialogId, DialogResponse response, int listItem, StringView inputText) override
     {
         resources_.call("OnDialogResponse", [&](lua_State* target) { lua_pushinteger(target, player.getID()); lua_pushinteger(target, dialogId); lua_pushinteger(target, static_cast<int>(response)); lua_pushinteger(target, listItem); lua_pushlstring(target, inputText.data(), inputText.size()); return 5; });
@@ -472,6 +708,7 @@ public:
         if (console_) console_->getEventDispatcher().removeEventHandler(this);
         if (dialogs_) dialogs_->getEventDispatcher().removeEventHandler(this);
         if (textdraws_) textdraws_->getEventDispatcher().removeEventHandler(this);
+        if (core_) core_->getPlayers().getPlayerTextDispatcher().removeEventHandler(this);
         resources_.stopAll();
         if (state_) lua_close(state_);
     }
