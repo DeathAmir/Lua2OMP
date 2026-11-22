@@ -231,7 +231,6 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
         luaopen_table(state_);
         luaopen_string(state_);
         luaopen_math(state_);
-        luaopen_coroutine(state_);
         registerFunction("print", luaPrint);
         registerFunction("SendClientMessage", sendClientMessage);
         registerFunction("SetPlayerPos", setPlayerPosition);
