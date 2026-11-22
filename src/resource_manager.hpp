@@ -20,6 +20,7 @@ extern "C" {
 #include <exception>
 #include "crypto.hpp"
 #include "crash_guard.hpp"
+#include "lua_panic.hpp"
 
 class LuaResourceManager
 {
@@ -43,9 +44,16 @@ class LuaResourceManager
         const auto logDirectory = resource ? resource->directory : root_;
         if (!logDirectory.empty())
         {
-            std::ofstream log(logDirectory / "error.log", std::ios::app);
+            std::filesystem::create_directories(logDirectory);
+            std::ofstream log(logDirectory / "error.log", std::ios::app | std::ios::binary);
             if (log) log << "[Lua2OMP] " << message << "\n";
             if (resource) lua2omp_crash::setActiveDirectory(resource->directory);
+        }
+        if (!root_.empty() && root_ != logDirectory)
+        {
+            std::filesystem::create_directories(root_);
+            std::ofstream log(root_ / "error.log", std::ios::app | std::ios::binary);
+            if (log) log << "[Lua2OMP] " << message << "\n";
         }
         if (logger_) logger_(message);
     }
@@ -100,6 +108,7 @@ class LuaResourceManager
         if (resource.scripts.empty()) { report(&resource, "no Lua scripts found in resource"); return false; }
         resource.state = luaL_newstate();
         if (!resource.state) { report(&resource, "cannot allocate Lua state"); return false; }
+        lua2omp_panic::attach(resource.state, resource.directory, root_);
         if (binder_) binder_(resource.state);
         const std::string modulePath = (resource.directory / "?.lua").string() + ";" + (resource.directory / "?/init.lua").string();
         lua_getglobal(resource.state, "package");
@@ -117,6 +126,7 @@ class LuaResourceManager
                 {
                     report(&resource, script.filename().string() + ": " + decryptError);
                     if (stopper_) stopper_(resource.state);
+                    lua2omp_panic::detach(resource.state);
                     lua_close(resource.state);
                     resource.state = nullptr;
                     return false;
@@ -130,6 +140,7 @@ class LuaResourceManager
                 report(&resource, script.filename().string() + ": compile/load error: " + (message ? message : "unknown Lua error"));
                 lua_pop(resource.state, 1);
                 if (stopper_) stopper_(resource.state);
+                lua2omp_panic::detach(resource.state);
                 lua_close(resource.state);
                 resource.state = nullptr;
                 return false;
@@ -140,6 +151,7 @@ class LuaResourceManager
                 report(&resource, script.filename().string() + ": runtime error: " + (message ? message : "unknown Lua error"));
                 lua_pop(resource.state, 1);
                 if (stopper_) stopper_(resource.state);
+                lua2omp_panic::detach(resource.state);
                 lua_close(resource.state);
                 resource.state = nullptr;
                 return false;
@@ -154,6 +166,7 @@ class LuaResourceManager
                 report(&resource, "OnResourceStart: " + std::string(message ? message : "unknown Lua error"));
                 lua_pop(resource.state, 1);
                 if (stopper_) stopper_(resource.state);
+                lua2omp_panic::detach(resource.state);
                 lua_close(resource.state);
                 resource.state = nullptr;
                 return false;
@@ -164,7 +177,12 @@ class LuaResourceManager
     }
 
 public:
-    void setRoot(std::filesystem::path root) { root_ = std::move(root); std::filesystem::create_directories(root_); }
+    void setRoot(std::filesystem::path root) {
+        root_ = std::filesystem::absolute(root).lexically_normal();
+        std::filesystem::create_directories(root_);
+        std::ofstream log(root_ / "error.log", std::ios::app | std::ios::binary);
+        if (log) log << "[Lua2OMP] Resource log initialized: " << root_.string() << "\n";
+    }
     void setBinder(std::function<void(lua_State*)> binder) { binder_ = std::move(binder); }
     void setStopper(std::function<void(lua_State*)> stopper) { stopper_ = std::move(stopper); }
     void setLogger(std::function<void(const std::string&)> logger) { logger_ = std::move(logger); }
@@ -208,6 +226,7 @@ public:
         }
         else lua_pop(found->second.state, 1);
         if (stopper_) stopper_(found->second.state);
+        lua2omp_panic::detach(found->second.state);
         lua_close(found->second.state);
         found->second.state = nullptr;
         return true;

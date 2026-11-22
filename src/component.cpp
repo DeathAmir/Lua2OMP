@@ -26,6 +26,7 @@ extern "C" {
 #include <exception>
 #include "crypto.hpp"
 #include "crash_guard.hpp"
+#include "lua_panic.hpp"
 #include "resource_manager.hpp"
 
 class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler, public PlayerTextEventHandler, public PlayerConnectEventHandler, public PlayerSpawnEventHandler, public PlayerDamageEventHandler, public PlayerChangeEventHandler
@@ -50,7 +51,17 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
     struct LuaTimer final : TimerTimeOutHandler {
         Lua2OMPComponent* owner; lua_State* state; int reference; int id;
         LuaTimer(Lua2OMPComponent* o, lua_State* s, int r, int i) : owner(o), state(s), reference(r), id(i) {}
-        void timeout(ITimer&) override { lua_rawgeti(state, LUA_REGISTRYINDEX, reference); if (lua_pcall(state, 0, 0, 0) != 0) { const char* e = lua_tostring(state, -1); if (owner->core_) owner->core_->logLnU8(Error, "[Lua2OMP] Timer: %s", e ? e : "runtime error"); lua_pop(state, 1); } }
+        void timeout(ITimer&) override {
+            if (!state) return;
+            lua_rawgeti(state, LUA_REGISTRYINDEX, reference);
+            if (lua_pcall(state, 0, 0, 0) != 0) {
+                const char* e = lua_tostring(state, -1);
+                const std::string message = std::string("[Lua2OMP] Timer callback: ") + (e ? e : "runtime error");
+                lua2omp_panic::append(state, message);
+                if (owner->core_) owner->core_->logLnU8(Error, "%s", message.c_str());
+                lua_pop(state, 1);
+            }
+        }
         void free(ITimer&) override { owner->timerPool_.erase(id); owner->timerOwners_.erase(id); luaL_unref(state, LUA_REGISTRYINDEX, reference); delete this; }
     };
     std::map<int, ITimer*> timerPool_;
@@ -78,7 +89,6 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
             size_t length = 0;
             const char* value = luaL_checklstring(state, i, &length);
             if (value) output.append(value, length);
-            lua_pop(state, 1);
         }
         if (instance->core_) instance->core_->printLnU8("[Lua] %s", output.c_str());
         return 0;
@@ -472,9 +482,10 @@ class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, pu
 
     void createState()
     {
-        if (state_) { cleanupResource(state_); lua_close(state_); }
+        if (state_) { cleanupResource(state_); lua2omp_panic::detach(state_); lua_close(state_); }
         state_ = luaL_newstate();
         if (!state_) return;
+        lua2omp_panic::attach(state_, root_ / "autorun", root_);
         luaopen_base(state_);
         luaopen_table(state_);
         luaopen_string(state_);
@@ -590,11 +601,17 @@ public:
     void onLoad(ICore* core) override
     {
         core_ = core;
-        root_ = std::filesystem::current_path() / "lua";
+        root_ = std::filesystem::absolute(std::filesystem::current_path() / "lua").lexically_normal();
         try
         {
             std::filesystem::create_directories(root_);
+            std::filesystem::create_directories(root_ / "resources");
+            std::filesystem::create_directories(root_ / "autorun");
             lua2omp_crash::install(root_);
+            {
+                std::ofstream log(root_ / "error.log", std::ios::app | std::ios::binary);
+                if (log) log << "[Lua2OMP] Component initialized. Root: " << root_.string() << "\n";
+            }
             createState();
         }
         catch (const std::exception& exception)
@@ -793,7 +810,9 @@ public:
             lua_pushlstring(target, params.data(), params.size());
             if (lua_pcall(target, 2, 1, 0) != 0) {
                 const char* error = lua_tostring(target, -1);
-                core_->logLnU8(Error, "[Lua2OMP] command /%s: %s", command.c_str(), error ? error : "runtime error");
+                const std::string message = std::string("[Lua2OMP] command /") + command + ": " + (error ? error : "runtime error");
+                lua2omp_panic::append(target, message);
+                core_->logLnU8(Error, "%s", message.c_str());
                 lua_pop(target, 1);
             } else { handled = true; lua_pop(target, 1); }
         }
@@ -855,7 +874,7 @@ public:
             core_->getPlayers().getPlayerChangeDispatcher().removeEventHandler(this);
         }
         resources_.stopAll();
-        if (state_) { cleanupResource(state_); lua_close(state_); }
+        if (state_) { cleanupResource(state_); lua2omp_panic::detach(state_); lua_close(state_); }
     }
 };
 
