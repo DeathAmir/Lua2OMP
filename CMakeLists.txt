@@ -33,6 +33,7 @@ set(LUA51_CORE
     lmathlib.c loslib.c ltablib.c lstrlib.c loadlib.c linit.c
 )
 list(TRANSFORM LUA51_CORE PREPEND "${LUA51_SRC}/")
+set_source_files_properties(${LUA51_CORE} PROPERTIES LANGUAGE C)
 add_library(lua51 STATIC ${LUA51_CORE})
 target_include_directories(lua51 PUBLIC ${LUA51_SRC})
 if(WIN32)
