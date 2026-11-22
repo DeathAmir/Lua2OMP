@@ -24,6 +24,7 @@ extern "C" {
 #include <sstream>
 #include <cctype>
 #include "crypto.hpp"
+#include "crash_guard.hpp"
 #include "resource_manager.hpp"
 
 class Lua2OMPComponent final : public IComponent, public ConsoleEventHandler, public PlayerDialogEventHandler, public TextDrawEventHandler, public PlayerTextEventHandler, public PlayerConnectEventHandler, public PlayerSpawnEventHandler, public PlayerDamageEventHandler, public PlayerChangeEventHandler
@@ -589,8 +590,24 @@ public:
     {
         core_ = core;
         root_ = std::filesystem::current_path() / "lua";
-        std::filesystem::create_directories(root_);
-        createState();
+        try
+        {
+            std::filesystem::create_directories(root_);
+            lua2omp_crash::install(root_);
+            createState();
+        }
+        catch (const std::exception& exception)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] onLoad exception: " << exception.what() << "\\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] onLoad exception: %s", exception.what());
+        }
+        catch (...)
+        {
+            std::ofstream log(root_ / "error.log", std::ios::app);
+            if (log) log << "[Lua2OMP] onLoad: unknown native exception\\n";
+            if (core_) core_->logLnU8(Error, "[Lua2OMP] onLoad: unknown native exception");
+        }
     }
 
     void onInit(IComponentList* components) override
